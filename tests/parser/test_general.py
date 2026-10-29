@@ -162,6 +162,36 @@ class TestSimilarElements:
         assert len(similar_high_rated_reviews) == 1
 
 
+class TestFindByClass:
+    def test_find_all_matches_multi_class_element(self, page):
+        """A single class token should match elements that carry other classes too"""
+        assert len(page.find_all("div", class_="stock")) == 3
+        assert len(page.find_all("div", class_="hidden")) == 3
+        assert page.find("div", class_="stock") is not None
+
+    def test_find_all_matches_all_of_multiple_tokens(self, page):
+        """Multiple class tokens all have to be present, regardless of order"""
+        assert len(page.find_all("div", class_="hidden stock")) == 3
+        assert len(page.find_all("div", class_="stock hidden")) == 3
+        assert page.find_all("div", class_="hidden nonexistent") == []
+
+    def test_find_all_keeps_filtering_on_a_blank_class(self):
+        """A blank class has no names to match, so it must match `class=""` instead of being dropped"""
+        blank_class = Selector('<div class="">empty</div><div class="a">a</div><div>none</div>')
+
+        assert [element.get_all_text() for element in blank_class.find_all("div", class_="")] == ["empty"]
+        assert blank_class.find_all("div", class_="   ") == []
+
+
+class TestFindByEscapedAttributes:
+    def test_find_all_matches_values_needing_css_escapes(self):
+        """Quotes and line breaks can't appear literally inside a CSS string, so they have to be escaped"""
+        page = Selector('<a title=\'say "hi"\'>quoted</a><a title="one\ntwo">broken</a>')
+
+        assert page.find("a", title='say "hi"').get_all_text() == "quoted"
+        assert page.find("a", title="one\ntwo").get_all_text() == "broken"
+
+
 # Error Handling Tests
 class TestErrorHandling:
     def test_invalid_selector_initialization(self):
@@ -319,6 +349,50 @@ def test_selectors_generation(page):
             _traverse(branch)
 
     _traverse(page)
+
+
+def test_full_path_selector_no_duplicate_ids():
+    """Test that full path selectors don't duplicate id segments (regression test)"""
+    html = '<html><body><div id="main"><p id="target">Hello</p></div></body></html>'
+    page = Selector(html)
+    target = page.css("#target").first
+
+    # CSS full path should not duplicate id selectors
+    css_full = target.generate_full_css_selector
+    assert css_full.count("#target") == 1, f"Duplicate #target in CSS full path: {css_full}"
+    assert css_full.count("#main") == 1, f"Duplicate #main in CSS full path: {css_full}"
+
+    # XPath full path should not duplicate id selectors
+    xpath_full = target.generate_full_xpath_selector
+    assert xpath_full.count("@id='target'") == 1, f"Duplicate @id='target' in XPath full path: {xpath_full}"
+    assert xpath_full.count("@id='main'") == 1, f"Duplicate @id='main' in XPath full path: {xpath_full}"
+
+    # The generated CSS selector should actually select the correct element
+    result = page.css(css_full)
+    assert len(result) == 1
+    assert result.first.text == "Hello"
+
+    # The generated XPath selector should also select the correct element
+    result = page.xpath(xpath_full)
+    assert len(result) == 1, f"XPath '{xpath_full}' selected {len(result)} elements, expected 1"
+    assert result.first.text == "Hello"
+
+
+def test_full_path_selector_mixed_id_and_no_id():
+    """Test full path selectors with a mix of elements with and without ids"""
+    html = '<html><body><div id="wrapper"><section><p>Text</p></section></div></body></html>'
+    page = Selector(html)
+    target = page.css("p").first
+
+    css_full = target.generate_full_css_selector
+    # p has no id, so it should appear as a tag name; div has id
+    assert "#wrapper" in css_full
+    assert css_full.count("#wrapper") == 1
+
+    # Verify the selector works
+    result = page.css(css_full)
+    assert len(result) == 1
+    assert result.first.text == "Text"
 
 
 # Miscellaneous Tests

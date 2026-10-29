@@ -72,11 +72,25 @@ class Spider(ABC):
     start_urls: list[str] = []
     allowed_domains: Set[str] = set()
 
+    # Robots.txt compliance
+    robots_txt_obey: bool = False
+
+    # Development mode
+    development_mode: bool = False
+    development_cache_dir: Optional[str] = None
+
     # Concurrency settings
     concurrent_requests: int = 4
     concurrent_requests_per_domain: int = 0
     download_delay: float = 0.0
     max_blocked_retries: int = 3
+
+    # AutoThrottle settings
+    autothrottle_enabled: bool = False
+    autothrottle_start_delay: float = 5.0
+    autothrottle_max_delay: float = 60.0
+    autothrottle_target_concurrency: Optional[float] = None
+    autothrottle_block_backoff: bool = True
 
     # Fingerprint adjustments
     fp_include_kwargs: bool = False

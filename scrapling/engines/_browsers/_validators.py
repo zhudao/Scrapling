@@ -26,23 +26,23 @@ from scrapling.engines._browsers._types import PlaywrightFetchParams, StealthFet
 
 # Custom validators for msgspec
 @lru_cache(8)
-def _is_invalid_file_path(value: str) -> bool | str:  # pragma: no cover
+def _is_invalid_file_path(value: str, label: str = "Init script") -> bool | str:  # pragma: no cover
     """Fast file path validation"""
     path = Path(value)
     if not path.exists():
-        return f"Init script path not found: {value}"
+        return f"{label} path not found: {value}"
     if not path.is_file():
-        return f"Init script is not a file: {value}"
+        return f"{label} is not a file: {value}"
     if not path.is_absolute():
-        return f"Init script is not a absolute path: {value}"
+        return f"{label} is not an absolute path: {value}"
     return False
 
 
 @lru_cache(2)
 def _is_invalid_cdp_url(cdp_url: str) -> bool | str:
     """Fast CDP URL validation"""
-    if not cdp_url.startswith(("ws://", "wss://")):
-        return "CDP URL must use 'ws://' or 'wss://' scheme"
+    if not cdp_url.startswith(("ws://", "wss://", "http://", "https://")):
+        return "CDP URL must use 'ws://', 'wss://', 'http://', or 'https://' scheme"
 
     netloc = urlparse(cdp_url).netloc
     if not netloc:  # pragma: no cover
@@ -53,7 +53,7 @@ def _is_invalid_cdp_url(cdp_url: str) -> bool | str:
 # Type aliases for cleaner annotations
 PagesCount = Annotated[int, Meta(ge=1, le=50)]
 RetriesCount = Annotated[int, Meta(ge=1, le=10)]
-Seconds = Annotated[int, float, Meta(ge=0)]
+Seconds = Annotated[float, Meta(ge=0)]
 
 
 class PlaywrightConfig(Struct, kw_only=True, frozen=False, weakref=True):
@@ -64,6 +64,7 @@ class PlaywrightConfig(Struct, kw_only=True, frozen=False, weakref=True):
     disable_resources: bool = False
     network_idle: bool = False
     load_dom: bool = True
+    pierce_shadow: bool = False
     wait_selector: Optional[str] = None
     wait_selector_state: SelectorWaitStates = "attached"
     cookies: Sequence[SetCookieParam] | None = []
@@ -71,6 +72,7 @@ class PlaywrightConfig(Struct, kw_only=True, frozen=False, weakref=True):
     wait: Seconds = 0
     timezone_id: str | None = ""
     page_action: Optional[Callable] = None
+    page_setup: Optional[Callable] = None
     proxy: Optional[str | Dict[str, str] | Tuple] = None  # The default value for proxy in Playwright's source is `None`
     proxy_rotator: Optional[ProxyRotator] = None
     extra_headers: Optional[Dict[str, str]] = None
@@ -85,13 +87,20 @@ class PlaywrightConfig(Struct, kw_only=True, frozen=False, weakref=True):
     useragent: Optional[str] = None
     extra_flags: Optional[List[str]] = None
     blocked_domains: Optional[Set[str]] = None
+    block_ads: bool = False
     retries: RetriesCount = 3
     retry_delay: Seconds = 1
+    record_requests: bool = False
+    max_recorded_requests: Annotated[int, Meta(ge=1)] = 1000
+    executable_path: Optional[str] = None
+    dns_over_https: bool = False
 
     def __post_init__(self):  # pragma: no cover
         """Custom validation after msgspec validation"""
         if self.page_action and not callable(self.page_action):
             raise TypeError(f"page_action must be callable, got {type(self.page_action).__name__}")
+        if self.page_setup and not callable(self.page_setup):
+            raise TypeError(f"page_setup must be callable, got {type(self.page_setup).__name__}")
         if self.proxy and self.proxy_rotator:
             raise ValueError(
                 "Cannot use 'proxy_rotator' together with 'proxy'. "
@@ -118,6 +127,19 @@ class PlaywrightConfig(Struct, kw_only=True, frozen=False, weakref=True):
             if validation_msg:
                 raise ValueError(validation_msg)
 
+        if self.executable_path is not None:
+            validation_msg = _is_invalid_file_path(self.executable_path, "Browser executable")
+            if validation_msg:
+                raise ValueError(validation_msg)
+
+        if self.block_ads:
+            from scrapling.engines.toolbelt.ad_domains import AD_DOMAINS
+
+            if self.blocked_domains:
+                self.blocked_domains = self.blocked_domains | set(AD_DOMAINS)
+            else:
+                self.blocked_domains = set(AD_DOMAINS)
+
 
 class StealthConfig(PlaywrightConfig, kw_only=True, frozen=False, weakref=True):
     allow_webgl: bool = True
@@ -141,12 +163,14 @@ class _fetch_params:
     timeout: Seconds
     wait: Seconds
     page_action: Optional[Callable]
+    page_setup: Optional[Callable]
     extra_headers: Optional[Dict[str, str]]
     disable_resources: bool
     wait_selector: Optional[str]
     wait_selector_state: SelectorWaitStates
     network_idle: bool
     load_dom: bool
+    pierce_shadow: bool
     blocked_domains: Optional[Set[str]]
     solve_cloudflare: bool
     selector_config: Dict
@@ -157,6 +181,8 @@ def validate_fetch(
     session: Any,
     model: type[PlaywrightConfig] | type[StealthConfig],
 ) -> _fetch_params:  # pragma: no cover
+    if "capture_xhr" in method_kwargs:
+        raise TypeError("capture_xhr was removed; use record_requests=True and session.network.")
     result: Dict[str, Any] = {}
     overrides: Dict[str, Any] = {}
     kwargs_dict: Dict[str, Any] = dict(method_kwargs)
@@ -221,6 +247,8 @@ def validate(params: Dict, model: type[PlaywrightConfig]) -> PlaywrightConfig: .
 
 
 def validate(params: Dict, model: type[PlaywrightConfig] | type[StealthConfig]) -> PlaywrightConfig | StealthConfig:
+    if "capture_xhr" in params:
+        raise TypeError("capture_xhr was removed; use record_requests=True and session.network.")
     try:
         # Filter out params with the default values (no need to validate them) to speed up validation
         filtered = _filter_defaults(params, model.__name__)
